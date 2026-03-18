@@ -1,0 +1,3 @@
+%{
+  "termite": {:hex, :termite, "0.4.0", "d369b21c2f426c42b4a6481a1a054053552fa24c2e2918f9d58485f3bd52ae6a", [:mix], [], "hexpm", "86f0c39f53363d6676ee21789e7de3c344258b037eee29a3d92a0a7abdc76f3d"},
+}
