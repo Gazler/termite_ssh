@@ -19,6 +19,7 @@ defmodule Termite.SSH do
           | {:system_dir, String.t()}
           | {:entrypoint, {module(), keyword()}}
           | {:name, GenServer.name()}
+          | {:session_supervisor_name, GenServer.name()}
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -40,7 +41,9 @@ defmodule Termite.SSH do
     Process.flag(:trap_exit, true)
 
     entrypoint = Keyword.fetch!(opts, :entrypoint)
-    {:ok, session_supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
+
+    {:ok, session_supervisor} =
+      DynamicSupervisor.start_link(session_supervisor_opts(opts))
 
     with {:ok, _apps} <- Application.ensure_all_started(:ssh),
          {:ok, daemon} <- start_daemon_ref(opts, self()) do
@@ -99,6 +102,26 @@ defmodule Termite.SSH do
 
     :ssh.daemon(port, daemon_opts)
   end
+
+  @doc false
+  def session_supervisor_opts(opts) do
+    case session_supervisor_name(opts) do
+      nil -> [strategy: :one_for_one]
+      name -> [strategy: :one_for_one, name: name]
+    end
+  end
+
+  @doc false
+  def session_supervisor_name(opts) do
+    Keyword.get(opts, :session_supervisor_name) ||
+      derive_session_supervisor_name(Keyword.get(opts, :name))
+  end
+
+  defp derive_session_supervisor_name(name) when is_atom(name) do
+    Module.concat(name, SessionSupervisor)
+  end
+
+  defp derive_session_supervisor_name(_name), do: nil
 
   defp auth_opts(:none), do: [no_auth_needed: true]
 

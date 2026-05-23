@@ -36,6 +36,30 @@ defmodule TermiteSshTest do
     assert Keyword.get(opts, :channel_pid) == self()
   end
 
+  test "session supervisor is named from an atom ssh process name" do
+    opts = Termite.SSH.session_supervisor_opts(name: TermiteSshTest.SSH)
+
+    assert opts[:strategy] == :one_for_one
+    assert opts[:name] == TermiteSshTest.SSH.SessionSupervisor
+  end
+
+  test "session supervisor name can be configured explicitly" do
+    opts =
+      Termite.SSH.session_supervisor_opts(
+        name: TermiteSshTest.SSH,
+        session_supervisor_name: TermiteSshTest.CustomSessionSupervisor
+      )
+
+    assert opts[:strategy] == :one_for_one
+    assert opts[:name] == TermiteSshTest.CustomSessionSupervisor
+  end
+
+  test "session supervisor stays unnamed when ssh process name cannot derive a module" do
+    opts = Termite.SSH.session_supervisor_opts(name: {:global, :termite_ssh})
+
+    assert opts == [strategy: :one_for_one]
+  end
+
   test "start_session supports plain start_link entrypoints" do
     {:ok, session_supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
 
