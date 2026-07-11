@@ -2,6 +2,24 @@
 
 SSH transport for `Termite` applications.
 
+## Installation
+
+Add `termite_ssh` to your dependencies:
+
+```elixir
+def deps do
+  [
+    {:termite_ssh, "~> 0.1.0"}
+  ]
+end
+```
+
+Add `Termite.SSH` to your application's supervision tree to start the SSH
+listener. Its module documentation describes the required options, session
+entrypoint contract, resource limits, and security considerations.
+
+## Host key
+
 `Termite.SSH` requires an explicit `system_dir` containing server host keys such
 as `ssh_host_rsa_key`. You can generate a local key for this repo with:
 
@@ -31,6 +49,12 @@ Each example starts an SSH server on `localhost:2222` by default. Override with
 
 The examples default to `TERMITE_SSH_NO_AUTH=1`. Set `TERMITE_SSH_NO_AUTH=0` to
 require password authentication for local testing.
+
+For resource safety, each server defaults to 100 simultaneous SSH sessions,
+one active channel per connection, and a five-second deadline for the Termite
+terminal to attach after a shell request. Override these with `:max_sessions`,
+`:max_channels`, and `:terminal_attach_timeout` when starting `Termite.SSH`.
+SFTP and other SSH subsystems are disabled.
 
 Then connect with either:
 

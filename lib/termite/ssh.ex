@@ -1,6 +1,70 @@
 defmodule Termite.SSH do
   @moduledoc """
-  Start a supervised application session for each client.
+  Runs Termite terminal applications over SSH.
+
+  Add `Termite.SSH` to your application's supervision tree. Each accepted SSH
+  shell starts one temporary child under an internal `DynamicSupervisor`. The
+  configured entrypoint receives the connection's `Termite.SSH.Session` in its
+  startup options.
+
+  ## Example
+
+      children = [
+        {Termite.SSH,
+         name: MyApp.SSH,
+         port: 2222,
+         auth: [{System.fetch_env!("SSH_USER"), System.fetch_env!("SSH_PASSWORD")}],
+         system_dir: Application.app_dir(:my_app, "priv/ssh"),
+         entrypoint: {MyApp.TerminalSession, []}}
+      ]
+
+      Supervisor.start_link(children, strategy: :one_for_one)
+
+  The entrypoint must provide `start_link/1` or `child_spec/1`. The session is
+  inserted into its keyword options under `:session`, replacing any existing
+  value. The authenticated SSH username is available as `session.username`:
+
+      def start_link(opts) do
+        session = Keyword.fetch!(opts, :session)
+
+        Task.start_link(fn ->
+          terminal = Termite.SSH.terminal(session)
+          run_terminal_application(terminal)
+          Termite.SSH.disconnect(session)
+        end)
+      end
+
+  ## Options
+
+  The following options are required:
+
+    * `:auth` - either `:none` or a list of `{username, password}` pairs.
+    * `:system_dir` - directory containing at least one `ssh_host_*_key` host
+      key. Run `mix termite.ssh.gen_host_key` to create a development key.
+    * `:entrypoint` - `{module, keyword_options}` used to start each session.
+
+  Optional settings are:
+
+    * `:port` - listening port. Defaults to `2222`.
+    * `:ip` - listening address. Defaults to the loopback address
+      `{127, 0, 0, 1}`.
+    * `:name` - name for the SSH server process.
+    * `:session_supervisor_name` - explicit name for the internal session
+      supervisor. For example, when `:name` is `MyApp.SSH`, this defaults to
+      `MyApp.SSH.SessionSupervisor`.
+    * `:max_sessions` - maximum simultaneous SSH connections. Defaults to
+      `100`.
+    * `:max_channels` - maximum active channels per connection. Defaults to
+      `1`.
+    * `:terminal_attach_timeout` - milliseconds allowed for the entrypoint to
+      attach its terminal after the shell request, or `:infinity`. Defaults to
+      `5_000`.
+
+  ## Security
+
+  `auth: :none` accepts every client without authentication. Use it only on a
+  trusted network, normally with the default loopback binding. SFTP and other
+  SSH subsystems are disabled; the daemon only exposes the Termite CLI channel.
   """
 
   use GenServer
@@ -8,10 +72,16 @@ defmodule Termite.SSH do
   alias Termite.SSH.Channel
   alias Termite.SSH.Session
 
+  @default_max_sessions 100
+  @default_max_channels 1
+  @default_terminal_attach_timeout 5_000
+
   defstruct [:daemon, :entrypoint, :session_supervisor]
 
+  @typedoc "SSH authentication configuration."
   @type auth_option :: :none | [{String.t(), String.t()}]
 
+  @typedoc "Option accepted by `start_link/1`."
   @type option ::
           {:port, pos_integer()}
           | {:ip, :inet.ip_address()}
@@ -20,19 +90,41 @@ defmodule Termite.SSH do
           | {:entrypoint, {module(), keyword()}}
           | {:name, GenServer.name()}
           | {:session_supervisor_name, GenServer.name()}
+          | {:max_sessions, pos_integer()}
+          | {:max_channels, pos_integer()}
+          | {:terminal_attach_timeout, timeout()}
 
-  @spec start_link(keyword()) :: GenServer.on_start()
+  @doc """
+  Starts an SSH server linked to the caller.
+
+  This function is normally invoked by a supervisor. See the module
+  documentation for required options and defaults.
+  """
+  @spec start_link([option()]) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name))
   end
 
-  @spec terminal(Session.t()) :: Termite.Terminal.t()
+  @doc """
+  Starts and attaches a Termite terminal for `session`.
+
+  Call this from the session entrypoint process. Input, output, resize signals,
+  and disconnect signals are routed through the session's SSH channel.
+  """
+  @spec terminal(Session.t()) :: %Termite.Terminal{}
   def terminal(%Session{} = session) do
     session
     |> Session.terminal_opts()
     |> Termite.Terminal.start()
   end
 
+  @doc """
+  Requests that the SSH channel for `session` be closed.
+
+  Session entrypoints should call this after their terminal application exits
+  normally. Client disconnects are delivered to the terminal reader as
+  `{:signal, :hup}`.
+  """
   @spec disconnect(Session.t()) :: term()
   def disconnect(%Session{} = session), do: Session.disconnect(session)
 
@@ -96,8 +188,20 @@ defmodule Termite.SSH do
       [
         ifaddr: ip,
         system_dir: to_charlist(system_dir),
-        parallel_login: true,
-        ssh_cli: {Channel, [owner: owner]}
+        max_sessions: Keyword.get(opts, :max_sessions, @default_max_sessions),
+        max_channels: Keyword.get(opts, :max_channels, @default_max_channels),
+        subsystems: [],
+        ssh_cli:
+          {Channel,
+           [
+             owner: owner,
+             terminal_attach_timeout:
+               Keyword.get(
+                 opts,
+                 :terminal_attach_timeout,
+                 @default_terminal_attach_timeout
+               )
+           ]}
       ] ++ auth_opts(Keyword.fetch!(opts, :auth))
 
     :ssh.daemon(port, daemon_opts)
@@ -117,7 +221,7 @@ defmodule Termite.SSH do
       derive_session_supervisor_name(Keyword.get(opts, :name))
   end
 
-  defp derive_session_supervisor_name(name) when is_atom(name) do
+  defp derive_session_supervisor_name(name) when is_atom(name) and not is_nil(name) do
     Module.concat(name, SessionSupervisor)
   end
 
@@ -149,7 +253,7 @@ defmodule Termite.SSH do
   end
 
   defp entrypoint_child_spec(mod, args, session) do
-    if function_exported?(mod, :child_spec, 1) do
+    if Code.ensure_loaded?(mod) and function_exported?(mod, :child_spec, 1) do
       mod
       |> apply(:child_spec, [args])
       |> Supervisor.child_spec(id: {mod, session.id}, restart: :temporary)

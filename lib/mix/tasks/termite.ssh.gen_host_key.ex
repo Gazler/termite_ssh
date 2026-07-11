@@ -1,8 +1,24 @@
 defmodule Mix.Tasks.Termite.Ssh.GenHostKey do
+  @moduledoc """
+  Generates an RSA SSH host key for local Termite.SSH development.
+
+      mix termite.ssh.gen_host_key
+
+  The private and public keys are written to `priv/ssh`. Existing keys are
+  preserved unless `--force` is supplied:
+
+      mix termite.ssh.gen_host_key --force
+
+  The private key is created with owner-only (`0600`) permissions. Production
+  deployments should provision and protect host keys independently of the
+  application release.
+  """
+
   use Mix.Task
 
   @shortdoc "Generate an SSH host key in priv/ssh"
 
+  @doc false
   @impl true
   def run(args) do
     {opts, _argv, _invalid} = OptionParser.parse(args, switches: [force: :boolean])
@@ -27,6 +43,7 @@ defmodule Mix.Tasks.Termite.Ssh.GenHostKey do
     public_key = public_key(private_key)
 
     File.write!(path, encode_pem(:RSAPrivateKey, private_key))
+    File.chmod!(path, 0o600)
     File.write!(path <> ".pub", encode_pem(:RSAPublicKey, public_key))
 
     Mix.shell().info("Generated SSH host key at #{path}")

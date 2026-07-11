@@ -43,6 +43,10 @@ defmodule TermiteSshTest do
     assert opts[:name] == TermiteSshTest.SSH.SessionSupervisor
   end
 
+  test "session supervisor stays unnamed when the ssh process is unnamed" do
+    assert Termite.SSH.session_supervisor_opts([]) == [strategy: :one_for_one]
+  end
+
   test "session supervisor name can be configured explicitly" do
     opts =
       Termite.SSH.session_supervisor_opts(
@@ -87,6 +91,51 @@ defmodule TermiteSshTest do
     state = %Termite.SSH{
       daemon: self(),
       entrypoint: {ChildSpecEntrypoint, []},
+      session_supervisor: session_supervisor
+    }
+
+    session = %Termite.SSH.Session{
+      id: make_ref(),
+      channel_pid: self(),
+      username: "demo",
+      disconnect: fn -> :ok end
+    }
+
+    assert {:noreply, ^state} = Termite.SSH.handle_info({:start_session, self(), session}, state)
+    assert_receive {:session_started, pid}
+    assert Agent.get(pid, & &1) == "demo"
+  end
+
+  test "start_session loads an entrypoint before checking for child_spec" do
+    mod = Termite.SSH.UnloadedEntrypointFixture
+    beam_dir = Path.join(System.tmp_dir!(), "termite_ssh_#{System.unique_integer([:positive])}")
+    fixture = Path.expand("fixtures/unloaded_entrypoint.fixture", __DIR__)
+
+    File.mkdir_p!(beam_dir)
+
+    assert {:ok, [^mod], _info} =
+             Kernel.ParallelCompiler.compile_to_path([fixture], beam_dir,
+               return_diagnostics: true
+             )
+
+    Code.prepend_path(beam_dir)
+    :code.purge(mod)
+    :code.delete(mod)
+
+    on_exit(fn ->
+      :code.purge(mod)
+      :code.delete(mod)
+      Code.delete_path(beam_dir)
+      File.rm_rf!(beam_dir)
+    end)
+
+    assert :code.is_loaded(mod) == false
+
+    {:ok, session_supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
+
+    state = %Termite.SSH{
+      daemon: self(),
+      entrypoint: {mod, []},
       session_supervisor: session_supervisor
     }
 

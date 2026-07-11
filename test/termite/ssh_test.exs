@@ -1,8 +1,6 @@
 defmodule Termite.SSHTest do
   use ExUnit.Case, async: false
 
-  require Logger
-
   @ssh_timeout 1_000
   @receive_timeout 1_000
   @connect_attempts 10
@@ -74,23 +72,28 @@ defmodule Termite.SSHTest do
     end
   end
 
+  defmodule NeverAttachSession do
+    def start_link(_opts) do
+      Agent.start_link(fn -> :waiting_for_shutdown end)
+    end
+  end
+
   test "runs a termite session over ssh" do
     port = allocate_port()
 
     system_dir = test_system_dir()
 
-    {:ok, daemon} =
-      Termite.SSH.start_link(
-        port: port,
-        ip: {127, 0, 0, 1},
-        auth: [{"demo", "secret"}],
-        system_dir: system_dir,
-        entrypoint: {SessionServer, []}
+    _server =
+      start_supervised!(
+        {Termite.SSH,
+         [
+           port: port,
+           ip: {127, 0, 0, 1},
+           auth: [{"demo", "secret"}],
+           system_dir: system_dir,
+           entrypoint: {SessionServer, []}
+         ]}
       )
-
-    on_exit(fn ->
-      :ssh.stop_daemon(daemon)
-    end)
 
     {:ok, conn} =
       connect_with_retry(~c"127.0.0.1", port,
@@ -126,18 +129,17 @@ defmodule Termite.SSHTest do
 
     system_dir = test_system_dir()
 
-    {:ok, daemon} =
-      Termite.SSH.start_link(
-        port: port,
-        ip: {127, 0, 0, 1},
-        auth: :none,
-        system_dir: system_dir,
-        entrypoint: {SessionServer, []}
+    _server =
+      start_supervised!(
+        {Termite.SSH,
+         [
+           port: port,
+           ip: {127, 0, 0, 1},
+           auth: :none,
+           system_dir: system_dir,
+           entrypoint: {SessionServer, []}
+         ]}
       )
-
-    on_exit(fn ->
-      :ssh.stop_daemon(daemon)
-    end)
 
     {:ok, conn} =
       connect_with_retry(~c"127.0.0.1", port,
@@ -164,18 +166,17 @@ defmodule Termite.SSHTest do
 
     system_dir = test_system_dir()
 
-    {:ok, daemon} =
-      Termite.SSH.start_link(
-        port: port,
-        ip: {127, 0, 0, 1},
-        auth: [{"demo", "secret"}],
-        system_dir: system_dir,
-        entrypoint: {SessionServer, []}
+    _server =
+      start_supervised!(
+        {Termite.SSH,
+         [
+           port: port,
+           ip: {127, 0, 0, 1},
+           auth: [{"demo", "secret"}],
+           system_dir: system_dir,
+           entrypoint: {SessionServer, []}
+         ]}
       )
-
-    on_exit(fn ->
-      :ssh.stop_daemon(daemon)
-    end)
 
     assert {:error, _reason} =
              connect_with_retry(~c"127.0.0.1", port,
@@ -193,18 +194,17 @@ defmodule Termite.SSHTest do
     system_dir = test_system_dir()
     parent = self()
 
-    {:ok, daemon} =
-      Termite.SSH.start_link(
-        port: port,
-        ip: {127, 0, 0, 1},
-        auth: [{"demo", "secret"}],
-        system_dir: system_dir,
-        entrypoint: {SessionServer, [parent: parent]}
+    _server =
+      start_supervised!(
+        {Termite.SSH,
+         [
+           port: port,
+           ip: {127, 0, 0, 1},
+           auth: [{"demo", "secret"}],
+           system_dir: system_dir,
+           entrypoint: {SessionServer, [parent: parent]}
+         ]}
       )
-
-    on_exit(fn ->
-      :ssh.stop_daemon(daemon)
-    end)
 
     {:ok, conn} =
       connect_with_retry(~c"127.0.0.1", port,
@@ -226,6 +226,65 @@ defmodule Termite.SSHTest do
     :ok = :ssh.close(conn)
     assert_receive :hup, @receive_timeout
     assert_receive {:terminated, _reason}, @receive_timeout
+  end
+
+  test "closes a shell when its terminal does not attach before the deadline" do
+    port = allocate_port()
+
+    _server =
+      start_supervised!(
+        {Termite.SSH,
+         [
+           port: port,
+           ip: {127, 0, 0, 1},
+           auth: :none,
+           system_dir: test_system_dir(),
+           entrypoint: {NeverAttachSession, []},
+           terminal_attach_timeout: 25
+         ]}
+      )
+
+    {:ok, conn} =
+      connect_with_retry(~c"127.0.0.1", port,
+        silently_accept_hosts: true,
+        user_interaction: false,
+        save_accepted_host: false,
+        user: ~c"demo"
+      )
+
+    on_exit(fn -> :ssh.close(conn) end)
+
+    {:ok, channel} = :ssh_connection.session_channel(conn, @ssh_timeout)
+    assert :ok = :ssh_connection.shell(conn, channel)
+    assert_receive {:ssh_cm, ^conn, {:closed, ^channel}}, @receive_timeout
+  end
+
+  test "does not expose the default sftp subsystem" do
+    port = allocate_port()
+
+    _server =
+      start_supervised!(
+        {Termite.SSH,
+         [
+           port: port,
+           ip: {127, 0, 0, 1},
+           auth: :none,
+           system_dir: test_system_dir(),
+           entrypoint: {SessionServer, []}
+         ]}
+      )
+
+    {:ok, conn} =
+      connect_with_retry(~c"127.0.0.1", port,
+        silently_accept_hosts: true,
+        user_interaction: false,
+        save_accepted_host: false,
+        user: ~c"demo"
+      )
+
+    on_exit(fn -> :ssh.close(conn) end)
+
+    assert {:error, _reason} = :ssh_sftp.start_channel(conn, timeout: @ssh_timeout)
   end
 
   defp test_system_dir do
