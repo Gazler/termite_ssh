@@ -14,11 +14,8 @@ defmodule Termite.SSH.Adapter do
     reader_target = Keyword.get(opts, :reader_target, self())
 
     case request(channel_pid, {:attach_terminal, reader_target, reader_ref}) do
-      :ok ->
-        {:ok, %__MODULE__{channel_pid: channel_pid, reader_ref: reader_ref}}
-
-      {:error, reason} ->
-        {:error, reason}
+      :ok -> {:ok, %__MODULE__{channel_pid: channel_pid, reader_ref: reader_ref}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -29,10 +26,7 @@ defmodule Termite.SSH.Adapter do
 
   @impl Adapter
   def write(%__MODULE__{channel_pid: channel_pid} = terminal, string) do
-    string =
-      string
-      |> String.replace("\r\n", "\n")
-      |> String.replace("\n", "\r\n")
+    string = string |> String.replace("\r\n", "\n") |> String.replace("\n", "\r\n")
 
     case request(channel_pid, {:write, string}) do
       :ok -> {:ok, terminal}
@@ -45,28 +39,30 @@ defmodule Termite.SSH.Adapter do
   @impl Adapter
   def resize(%__MODULE__{channel_pid: channel_pid}) do
     case request(channel_pid, :size) do
-      %{width: width, height: height} = size when is_integer(width) and is_integer(height) ->
-        size
-
-      _ ->
-        %{width: 80, height: 24}
+      %{width: width, height: height} = size when is_integer(width) and is_integer(height) -> size
+      _ -> %{width: 80, height: 24}
     end
   end
 
   defp request(channel_pid, payload, timeout \\ 5_000) do
     ref = make_ref()
+    # Deactivating this alias drops replies that arrive after the request times out.
+    reply_target = Process.alias()
     monitor_ref = Process.monitor(channel_pid)
-    send(channel_pid, {:terminal_request, self(), ref, payload})
+    send(channel_pid, {:terminal_request, reply_target, ref, payload})
 
     receive do
       {:terminal_reply, ^ref, reply} ->
+        Process.unalias(reply_target)
         Process.demonitor(monitor_ref, [:flush])
         reply
 
       {:DOWN, ^monitor_ref, :process, ^channel_pid, _reason} ->
+        Process.unalias(reply_target)
         {:error, :closed}
     after
       timeout ->
+        Process.unalias(reply_target)
         Process.demonitor(monitor_ref, [:flush])
         {:error, :timeout}
     end

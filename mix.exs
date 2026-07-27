@@ -22,15 +22,13 @@ defmodule TermiteSsh.MixProject do
   end
 
   defp deps do
-    [
-      {:termite, "~> 0.4 or ~> 1.0.0"},
-      {:ex_doc, "~> 0.40.3", only: :dev, runtime: false}
-    ]
+    [{:termite, "~> 0.4 or ~> 1.0.0"}, {:ex_doc, "~> 0.40.3", only: :dev, runtime: false}]
   end
 
   defp package do
     [
-      files: ["lib", ".formatter.exs", "mix.exs", "README.md"],
+      files: ["lib", ".formatter.exs", "mix.exs", "README.md", "LICENCE.md"],
+      licenses: ["MIT"],
       links: %{"GitHub" => @source_url}
     ]
   end

@@ -26,9 +26,7 @@ defmodule Termite.SSH.Session do
   """
   @spec terminal_opts(t(), keyword()) :: keyword()
   def terminal_opts(%__MODULE__{channel_pid: channel_pid}, opts \\ []) do
-    opts
-    |> Keyword.put(:adapter, Termite.SSH.Adapter)
-    |> Keyword.put(:channel_pid, channel_pid)
+    opts |> Keyword.put(:adapter, Termite.SSH.Adapter) |> Keyword.put(:channel_pid, channel_pid)
   end
 
   @doc """

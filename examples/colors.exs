@@ -2,24 +2,15 @@ Code.require_file("helper.exs", __DIR__)
 
 defmodule TermiteSSHColors do
   def start(term) do
-    term
-    |> draw()
-    |> loop()
+    term |> draw() |> loop()
   end
 
   defp loop(term) do
     case Termite.Terminal.poll(term) do
-      {:signal, :winch} ->
-        term |> Termite.Terminal.resize() |> draw() |> loop()
-
-      {:signal, :hup} ->
-        term
-
-      {:data, "q"} ->
-        term
-
-      _ ->
-        loop(term)
+      {:signal, :winch} -> term |> Termite.Terminal.resize() |> draw() |> loop()
+      {:signal, :hup} -> term
+      {:data, "q"} -> term
+      _ -> loop(term)
     end
   end
 
@@ -67,9 +58,7 @@ defmodule TermiteSSHColors do
         Termite.Screen.write(acc, newline(str, rem(i - 232, 6), 5))
       end)
 
-    term
-    |> Termite.Screen.write("\n\nPress q to quit")
-    |> Termite.Screen.write("\n")
+    term |> Termite.Screen.write("\n\nPress q to quit") |> Termite.Screen.write("\n")
   end
 end
 
@@ -78,9 +67,7 @@ defmodule TermiteSSHColorsEntrypoint do
     session = Keyword.fetch!(opts, :session)
 
     Task.start_link(fn ->
-      session
-      |> Termite.SSH.terminal()
-      |> TermiteSSHColors.start()
+      session |> Termite.SSH.terminal() |> TermiteSSHColors.start()
 
       Termite.SSH.disconnect(session)
     end)

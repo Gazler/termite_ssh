@@ -18,6 +18,9 @@ Add `Termite.SSH` to your application's supervision tree to start the SSH
 listener. Its module documentation describes the required options, session
 entrypoint contract, resource limits, and security considerations.
 
+Before exposing a listener to the public Internet, review the official
+[Erlang SSH hardening guide](https://www.erlang.org/doc/apps/ssh/hardening.html).
+
 ## Host key
 
 `Termite.SSH` requires an explicit `system_dir` containing server host keys such

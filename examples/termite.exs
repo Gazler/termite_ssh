@@ -28,9 +28,7 @@ defmodule TermiteSSHTermiteEntrypoint do
     session = Keyword.fetch!(opts, :session)
 
     Task.start_link(fn ->
-      session
-      |> Termite.SSH.terminal()
-      |> TermiteSSHTermite.start()
+      session |> Termite.SSH.terminal() |> TermiteSSHTermite.start()
 
       Termite.SSH.disconnect(session)
     end)

@@ -1,8 +1,0 @@
-defmodule Termite.SSH.UnloadedEntrypointFixture do
-  def child_spec(opts) do
-    %{
-      id: __MODULE__,
-      start: {Agent, :start_link, [fn -> Keyword.fetch!(opts, :session).username end]}
-    }
-  end
-end

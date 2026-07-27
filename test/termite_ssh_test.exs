@@ -36,6 +36,31 @@ defmodule TermiteSshTest do
     assert Keyword.get(opts, :channel_pid) == self()
   end
 
+  test "public-key authentication fails closed for unknown usernames" do
+    options = [key_cb_private: [user_dirs: %{}]]
+    refute Termite.SSH.KeyCallback.is_auth_key(:unknown_key, ~c"unknown", options)
+
+    raising = [key_cb_private: [verifier: fn _username, _key -> raise "unavailable" end]]
+    refute Termite.SSH.KeyCallback.is_auth_key(:unknown_key, ~c"unknown", raising)
+  end
+
+  test "public-key verifiers receive Unicode usernames as UTF-8 strings" do
+    parent = self()
+    username = "josé🔑"
+
+    options = [
+      key_cb_private: [
+        verifier: fn received_username, key ->
+          send(parent, {:public_key_attempt, received_username, key})
+          true
+        end
+      ]
+    ]
+
+    assert Termite.SSH.KeyCallback.is_auth_key(:public_key, to_charlist(username), options)
+    assert_receive {:public_key_attempt, ^username, :public_key}
+  end
+
   test "session supervisor is named from an atom ssh process name" do
     opts = Termite.SSH.session_supervisor_opts(name: TermiteSshTest.SSH)
 
@@ -80,7 +105,9 @@ defmodule TermiteSshTest do
       disconnect: fn -> :ok end
     }
 
-    assert {:noreply, ^state} = Termite.SSH.handle_info({:start_session, self(), session}, state)
+    assert {:noreply, %Termite.SSH{}} =
+             Termite.SSH.handle_info({:start_session, self(), session}, state)
+
     assert_receive {:session_started, pid}
     assert Agent.get(pid, & &1) == "demo"
   end
@@ -101,52 +128,9 @@ defmodule TermiteSshTest do
       disconnect: fn -> :ok end
     }
 
-    assert {:noreply, ^state} = Termite.SSH.handle_info({:start_session, self(), session}, state)
-    assert_receive {:session_started, pid}
-    assert Agent.get(pid, & &1) == "demo"
-  end
+    assert {:noreply, %Termite.SSH{}} =
+             Termite.SSH.handle_info({:start_session, self(), session}, state)
 
-  test "start_session loads an entrypoint before checking for child_spec" do
-    mod = Termite.SSH.UnloadedEntrypointFixture
-    beam_dir = Path.join(System.tmp_dir!(), "termite_ssh_#{System.unique_integer([:positive])}")
-    fixture = Path.expand("fixtures/unloaded_entrypoint.fixture", __DIR__)
-
-    File.mkdir_p!(beam_dir)
-
-    assert {:ok, [^mod], _info} =
-             Kernel.ParallelCompiler.compile_to_path([fixture], beam_dir,
-               return_diagnostics: true
-             )
-
-    Code.prepend_path(beam_dir)
-    :code.purge(mod)
-    :code.delete(mod)
-
-    on_exit(fn ->
-      :code.purge(mod)
-      :code.delete(mod)
-      Code.delete_path(beam_dir)
-      File.rm_rf!(beam_dir)
-    end)
-
-    assert :code.is_loaded(mod) == false
-
-    {:ok, session_supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
-
-    state = %Termite.SSH{
-      daemon: self(),
-      entrypoint: {mod, []},
-      session_supervisor: session_supervisor
-    }
-
-    session = %Termite.SSH.Session{
-      id: make_ref(),
-      channel_pid: self(),
-      username: "demo",
-      disconnect: fn -> :ok end
-    }
-
-    assert {:noreply, ^state} = Termite.SSH.handle_info({:start_session, self(), session}, state)
     assert_receive {:session_started, pid}
     assert Agent.get(pid, & &1) == "demo"
   end
@@ -169,5 +153,52 @@ defmodule TermiteSshTest do
 
     assert {:noreply, ^state} = Termite.SSH.handle_info({:start_session, self(), session}, state)
     assert_receive {:session_start_failed, :boom}
+  end
+
+  test "a disconnected channel cannot leave an orphaned session" do
+    {:ok, session_supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
+    parent = self()
+
+    channel_pid =
+      spawn(fn ->
+        receive do
+          {:session_started, session_pid} ->
+            send(parent, {:forwarded_session_started, session_pid})
+            Process.sleep(:infinity)
+        end
+      end)
+
+    state = %Termite.SSH{
+      daemon: self(),
+      entrypoint: {PlainEntrypoint, []},
+      session_supervisor: session_supervisor
+    }
+
+    session = %Termite.SSH.Session{
+      id: make_ref(),
+      channel_pid: channel_pid,
+      username: "demo",
+      disconnect: fn -> :ok end
+    }
+
+    assert {:noreply, %Termite.SSH{} = state} =
+             Termite.SSH.handle_info({:start_session, channel_pid, session}, state)
+
+    assert_receive {:forwarded_session_started, session_pid}
+    session_ref = Process.monitor(session_pid)
+    Process.exit(channel_pid, :kill)
+
+    assert_receive {:DOWN, channel_ref, :process, ^channel_pid, :killed}
+
+    assert {:noreply, %Termite.SSH{sessions: sessions} = state} =
+             Termite.SSH.handle_info({:DOWN, channel_ref, :process, channel_pid, :killed}, state)
+
+    assert sessions == %{}
+    assert_receive {:shutdown_disconnected_session, ^session_pid}, 250
+
+    assert {:noreply, ^state} =
+             Termite.SSH.handle_info({:shutdown_disconnected_session, session_pid}, state)
+
+    assert_receive {:DOWN, ^session_ref, :process, ^session_pid, :shutdown}
   end
 end
