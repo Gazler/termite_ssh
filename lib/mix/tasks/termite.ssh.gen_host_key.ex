@@ -21,6 +21,8 @@ defmodule Mix.Tasks.Termite.Ssh.GenHostKey do
   @doc false
   @impl true
   def run(args) do
+    ensure_public_key_started!()
+
     {opts, _argv, _invalid} = OptionParser.parse(args, switches: [force: :boolean])
 
     path = Path.join([File.cwd!(), "priv", "ssh", "ssh_host_rsa_key"])
@@ -47,6 +49,18 @@ defmodule Mix.Tasks.Termite.Ssh.GenHostKey do
     File.write!(path <> ".pub", encode_pem(:RSAPublicKey, public_key))
 
     Mix.shell().info("Generated SSH host key at #{path}")
+  end
+
+  defp ensure_public_key_started! do
+    case Application.ensure_all_started(:public_key) do
+      {:ok, _applications} ->
+        :ok
+
+      {:error, {application, reason}} ->
+        Mix.raise(
+          "could not start #{application} while generating an SSH host key: #{inspect(reason)}"
+        )
+    end
   end
 
   defp public_key(
