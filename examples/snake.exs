@@ -113,9 +113,7 @@ defmodule TermiteSSHSnake do
     {tail_x, tail_y} = hd(path)
 
     term =
-      term
-      |> Screen.run_escape_sequence(:cursor_move, [tail_x * 2, tail_y])
-      |> Screen.write("  ")
+      term |> Screen.run_escape_sequence(:cursor_move, [tail_x * 2, tail_y]) |> Screen.write("  ")
 
     new_point =
       case direction do
@@ -140,18 +138,13 @@ defmodule TermiteSSHSnake do
       end
 
     if wall_collision? || tail_collision? do
-      {:halt,
-       term
-       |> cleanup()
-       |> Termite.Screen.write("Game over\r\n")}
+      {:halt, term |> cleanup() |> Termite.Screen.write("Game over\r\n")}
     else
       term = Screen.write(term, IO.ANSI.inverse())
 
       term =
         Enum.reduce(state.path, term, fn {x, y}, acc ->
-          acc
-          |> Screen.run_escape_sequence(:cursor_move, [x * 2, y])
-          |> Screen.write("  ")
+          acc |> Screen.run_escape_sequence(:cursor_move, [x * 2, y]) |> Screen.write("  ")
         end)
 
       term = Screen.write(term, IO.ANSI.reset())
@@ -165,9 +158,7 @@ defmodule TermiteSSHSnakeEntrypoint do
     session = Keyword.fetch!(opts, :session)
 
     Task.start_link(fn ->
-      session
-      |> Termite.SSH.terminal()
-      |> TermiteSSHSnake.start()
+      session |> Termite.SSH.terminal() |> TermiteSSHSnake.start()
 
       Termite.SSH.disconnect(session)
     end)

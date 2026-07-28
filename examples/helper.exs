@@ -9,11 +9,13 @@ defmodule TermiteSSHExample.Helper do
         nil -> true
         value -> value in ["1", "true", "TRUE"]
       end
+
     system_dir = System.get_env("TERMITE_SSH_SYSTEM_DIR") || Path.expand("../priv/ssh", __DIR__)
 
     case Termite.SSH.start_link(
            port: port,
            auth: auth_opts(no_auth?, username, password),
+           allow_insecure_auth: true,
            system_dir: system_dir,
            entrypoint: {entrypoint, []}
          ) do
