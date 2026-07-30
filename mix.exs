@@ -6,7 +6,7 @@ defmodule TermiteSsh.MixProject do
   def project do
     [
       app: :termite_ssh,
-      version: "0.1.0",
+      version: "0.1.1",
       elixir: "~> 1.18",
       description: "SSH transport for Termite terminal applications",
       source_url: @source_url,
@@ -18,11 +18,14 @@ defmodule TermiteSsh.MixProject do
   end
 
   def application do
-    [extra_applications: [:logger, :ssh]]
+    [extra_applications: [:logger, :ssh], mod: {Termite.SSH.Application, []}]
   end
 
   defp deps do
-    [{:termite, "~> 0.4 or ~> 1.0.0"}, {:ex_doc, "~> 0.40.3", only: :dev, runtime: false}]
+    [
+      {:termite, ">= 0.4.4 and < 1.1.0"},
+      {:ex_doc, "~> 0.40.3", only: :dev, runtime: false}
+    ]
   end
 
   defp package do

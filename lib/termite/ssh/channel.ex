@@ -20,6 +20,7 @@ defmodule Termite.SSH.Channel do
     pty_requested: false,
     eof_received: false,
     disconnect_notified: false,
+    terminal_restored?: false,
     shutdown_scheduled: false,
     max_reader_queue_length: 64,
     max_terminal_width: 500,
@@ -31,6 +32,16 @@ defmodule Termite.SSH.Channel do
   ]
 
   @disconnect_grace_ms 100
+  @terminal_restore_timeout 1_000
+  @terminal_restore_data IO.iodata_to_binary([
+                           Termite.Screen.escape_sequence(:enhanced_keyboard_disable),
+                           Termite.Screen.escape_sequence(:mouse_motion_disable),
+                           Termite.Screen.escape_sequence(:mouse_drag_disable),
+                           Termite.Screen.escape_sequence(:mouse_click_disable),
+                           Termite.Screen.escape_sequence(:mouse_sgr_disable),
+                           Termite.Screen.escape_sequence(:screen_alt_exit),
+                           Termite.Screen.escape_sequence(:cursor_show)
+                         ])
   @session_kill_timeout 5_000
   @max_pending_input_bytes 65_536
   @max_pending_input_chunks 1_024
@@ -120,6 +131,19 @@ defmodule Termite.SSH.Channel do
   def handle_msg({:terminal_request, from, ref, :size}, state) do
     send(from, {:terminal_reply, ref, state.size})
     {:ok, state}
+  end
+
+  def handle_msg(
+        {:prepare_shutdown, from, ref},
+        %{conn_ref: conn_ref, channel_id: channel_id} = state
+      )
+      when is_pid(from) and is_reference(ref) and not is_nil(conn_ref) and
+             not is_nil(channel_id) do
+    state = restore_terminal(state)
+    :ssh_connection.exit_status(conn_ref, channel_id, 0)
+    :ssh_connection.send_eof(conn_ref, channel_id)
+    send(from, {:channel_shutdown_prepared, ref, self()})
+    {:stop, channel_id, state}
   end
 
   def handle_msg({:session_started, pid}, %{session_pid: nil} = state) when is_pid(pid) do
@@ -311,6 +335,7 @@ defmodule Termite.SSH.Channel do
   @impl :ssh_server_channel
   def terminate(_reason, state) do
     cancel_attach_timer(state.attach_timer)
+    state = restore_terminal(state)
     _state = notify_disconnect(state)
     :ok
   end
@@ -375,16 +400,36 @@ defmodule Termite.SSH.Channel do
   end
 
   defp fail_channel(conn_ref, channel_id, state) do
+    state = restore_terminal(state)
     :ssh_connection.exit_status(conn_ref, channel_id, 1)
     :ssh_connection.send_eof(conn_ref, channel_id)
     {:stop, channel_id, state}
   end
 
   defp close_channel(channel_id, status, %{conn_ref: conn_ref} = state) do
+    state = restore_terminal(state)
     :ssh_connection.exit_status(conn_ref, channel_id, status)
     :ssh_connection.send_eof(conn_ref, channel_id)
     {:stop, channel_id, state}
   end
+
+  defp restore_terminal(%{terminal_restored?: true} = state), do: state
+
+  defp restore_terminal(
+         %{
+           mode: :shell,
+           pty_requested: true,
+           reader_target: reader_target,
+           conn_ref: conn_ref,
+           channel_id: channel_id
+         } = state
+       )
+       when is_pid(reader_target) and not is_nil(conn_ref) and not is_nil(channel_id) do
+    _result = ssh_send(conn_ref, channel_id, @terminal_restore_data, @terminal_restore_timeout)
+    %{state | terminal_restored?: true}
+  end
+
+  defp restore_terminal(state), do: state
 
   defp session_exit_status(:normal), do: 0
   defp session_exit_status(:shutdown), do: 0
@@ -441,8 +486,8 @@ defmodule Termite.SSH.Channel do
 
   defp shutdown_session(_state), do: :ok
 
-  defp ssh_send(conn_ref, channel_id, data) do
-    case :ssh_connection.send(conn_ref, channel_id, data, 5_000) do
+  defp ssh_send(conn_ref, channel_id, data, timeout \\ 5_000) do
+    case :ssh_connection.send(conn_ref, channel_id, data, timeout) do
       :ok -> :ok
       {:error, reason} -> {:error, reason}
     end

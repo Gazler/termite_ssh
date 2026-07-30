@@ -36,6 +36,11 @@ defmodule Termite.SSH do
         end)
       end
 
+  When an attached PTY shell closes or the application shuts down normally, the
+  SSH channel makes a best-effort attempt to restore common terminal modes
+  before disconnecting. This cannot restore the terminal if the Erlang node or
+  network connection has already been lost.
+
   ## Options
 
   The following options are required:
@@ -145,6 +150,7 @@ defmodule Termite.SSH do
   @default_max_terminal_height 200
   @session_shutdown_grace_ms 100
   @session_kill_timeout 5_000
+  @channel_shutdown_timeout 1_250
 
   defstruct [
     :daemon,
@@ -153,6 +159,7 @@ defmodule Termite.SSH do
     :daemon_guard_ref,
     :entrypoint,
     :session_supervisor,
+    shutdown_prepared?: false,
     sessions: %{}
   ]
 
@@ -230,6 +237,13 @@ defmodule Termite.SSH do
   @spec disconnect(Session.t()) :: term()
   def disconnect(%Session{} = session), do: Session.disconnect(session)
 
+  @doc false
+  def prepare_shutdown(server, timeout \\ 2_000) when is_pid(server) do
+    GenServer.call(server, :prepare_shutdown, timeout)
+  catch
+    :exit, _reason -> :ok
+  end
+
   @impl true
   def init(opts) do
     Process.flag(:trap_exit, true)
@@ -239,6 +253,8 @@ defmodule Termite.SSH do
     with {:ok, session_supervisor} <- DynamicSupervisor.start_link(session_supervisor_opts(opts)),
          {:ok, _apps} <- Application.ensure_all_started(:ssh),
          {:ok, daemon, daemon_guard, daemon_guard_ref} <- start_daemon_ref(opts, self()) do
+      Termite.SSH.Application.register_server()
+
       {:ok,
        %__MODULE__{
          daemon: daemon,
@@ -251,6 +267,17 @@ defmodule Termite.SSH do
     else
       {:error, reason} -> {:stop, reason}
     end
+  end
+
+  @impl true
+  def handle_call(:prepare_shutdown, _from, %{shutdown_prepared?: true} = state) do
+    {:reply, :ok, state}
+  end
+
+  def handle_call(:prepare_shutdown, _from, state) do
+    stop_listener(state.daemon)
+    prepare_channels_for_shutdown(state.sessions)
+    {:reply, :ok, %{state | shutdown_prepared?: true}}
   end
 
   @impl true
@@ -277,6 +304,18 @@ defmodule Termite.SSH do
       Process.demonitor(channel_ref, [:flush])
       {:noreply, state}
     end
+  end
+
+  def handle_info(
+        {:DOWN, daemon_ref, :process, daemon, reason},
+        %{
+          daemon: daemon,
+          daemon_ref: daemon_ref,
+          shutdown_prepared?: true
+        } = state
+      )
+      when reason in [:normal, :shutdown] do
+    {:stop, :normal, state}
   end
 
   def handle_info(
@@ -335,7 +374,15 @@ defmodule Termite.SSH do
   def handle_info(_message, state), do: {:noreply, state}
 
   @impl true
-  def terminate(_reason, %{daemon: daemon}) when is_pid(daemon), do: stop_daemon(daemon)
+  def terminate(_reason, %{daemon: daemon, shutdown_prepared?: true}) when is_pid(daemon) do
+    stop_daemon(daemon)
+  end
+
+  def terminate(_reason, %{daemon: daemon} = state) when is_pid(daemon) do
+    stop_listener(daemon)
+    prepare_channels_for_shutdown(state.sessions)
+    stop_daemon(daemon)
+  end
 
   def terminate(_reason, _state), do: :ok
 
@@ -420,6 +467,49 @@ defmodule Termite.SSH do
   catch
     :exit, :noproc -> :ok
     :exit, {:noproc, _call} -> :ok
+  end
+
+  defp stop_listener(daemon) do
+    :ssh.stop_listener(daemon)
+  rescue
+    MatchError -> :ok
+  catch
+    :exit, :noproc -> :ok
+    :exit, {:noproc, _call} -> :ok
+  end
+
+  defp prepare_channels_for_shutdown(sessions) do
+    pending =
+      Enum.reduce(sessions, %{}, fn {_monitor_ref, %{channel_pid: channel_pid}}, pending ->
+        if Process.alive?(channel_pid) do
+          request_ref = make_ref()
+          send(channel_pid, {:prepare_shutdown, self(), request_ref})
+          Map.put(pending, request_ref, channel_pid)
+        else
+          pending
+        end
+      end)
+
+    await_prepared_channels(
+      pending,
+      System.monotonic_time(:millisecond) + @channel_shutdown_timeout
+    )
+  end
+
+  defp await_prepared_channels(pending, _deadline) when map_size(pending) == 0, do: :ok
+
+  defp await_prepared_channels(pending, deadline) do
+    timeout = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {:channel_shutdown_prepared, ref, channel_pid} ->
+        case Map.pop(pending, ref) do
+          {^channel_pid, pending} -> await_prepared_channels(pending, deadline)
+          _unknown -> await_prepared_channels(pending, deadline)
+        end
+    after
+      timeout -> :ok
+    end
   end
 
   defp channel_opts(opts, owner) do

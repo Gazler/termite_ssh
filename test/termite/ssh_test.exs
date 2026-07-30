@@ -5,6 +5,9 @@ defmodule Termite.SSHTest do
   @receive_timeout 1_000
   @connect_attempts 10
   @connect_sleep_ms 25
+  @terminal_cleanup "\e[<u\e[>4;0m" <>
+                      "\e[?1003l\e[?1002l\e[?1000l\e[?1006l" <>
+                      "\e[?1049l\e[?25h"
 
   setup_all do
     system_dir = Termite.SSH.TestKeys.create_system_dir()
@@ -173,6 +176,86 @@ defmodule Termite.SSHTest do
 
     :ok = :ssh_connection.send(conn, channel, "x")
     assert_channel_exit(conn, channel, 1)
+  end
+
+  test "restores terminal modes before closing a PTY shell", %{system_dir: system_dir} do
+    port = allocate_port()
+
+    _server =
+      start_supervised!(
+        {Termite.SSH,
+         [
+           port: port,
+           ip: {127, 0, 0, 1},
+           auth: :none,
+           allow_insecure_auth: true,
+           system_dir: system_dir,
+           entrypoint: {SessionServer, []}
+         ]}
+      )
+
+    {:ok, conn} =
+      connect_with_retry(~c"127.0.0.1", port,
+        silently_accept_hosts: true,
+        user_interaction: false,
+        save_accepted_host: false,
+        user: ~c"demo"
+      )
+
+    on_exit(fn -> :ssh.close(conn) end)
+
+    {:ok, channel} = :ssh_connection.session_channel(conn, @ssh_timeout)
+
+    assert :success =
+             :ssh_connection.ptty_alloc(conn, channel, term: ~c"xterm", width: 80, height: 24)
+
+    assert :ok = :ssh_connection.shell(conn, channel)
+    _initial = receive_data(conn, channel)
+
+    :ok = :ssh_connection.send(conn, channel, "q")
+    assert receive_data(conn, channel) == @terminal_cleanup
+    assert_channel_exit(conn, channel, 0)
+  end
+
+  test "restores and closes PTY shells while preparing application shutdown", %{
+    system_dir: system_dir
+  } do
+    port = allocate_port()
+
+    server =
+      start_supervised!(
+        {Termite.SSH,
+         [
+           port: port,
+           ip: {127, 0, 0, 1},
+           auth: :none,
+           allow_insecure_auth: true,
+           system_dir: system_dir,
+           entrypoint: {SessionServer, []}
+         ]}
+      )
+
+    {:ok, conn} =
+      connect_with_retry(~c"127.0.0.1", port,
+        silently_accept_hosts: true,
+        user_interaction: false,
+        save_accepted_host: false,
+        user: ~c"demo"
+      )
+
+    on_exit(fn -> :ssh.close(conn) end)
+
+    {:ok, channel} = :ssh_connection.session_channel(conn, @ssh_timeout)
+
+    assert :success =
+             :ssh_connection.ptty_alloc(conn, channel, term: ~c"xterm", width: 80, height: 24)
+
+    assert :ok = :ssh_connection.shell(conn, channel)
+    _initial = receive_data(conn, channel)
+
+    assert :ok = Termite.SSH.prepare_shutdown(server)
+    assert receive_data(conn, channel) == @terminal_cleanup
+    assert_channel_exit(conn, channel, 0)
   end
 
   test "accepts no-auth sessions when configured", %{system_dir: system_dir} do
