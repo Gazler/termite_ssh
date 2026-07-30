@@ -6,7 +6,7 @@ defmodule TermiteSsh.MixProject do
   def project do
     [
       app: :termite_ssh,
-      version: "0.1.1",
+      version: "0.1.2",
       elixir: "~> 1.18",
       description: "SSH transport for Termite terminal applications",
       source_url: @source_url,
